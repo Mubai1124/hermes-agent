@@ -1385,7 +1385,6 @@ class AIAgent:
                     logger.info("Lossless context manager enabled: session=%s", self.session_id)
             except Exception as e:
                 logger.warning("Failed to initialize LosslessContextManager: %s", e)
-        )
         self._user_turn_count = 0
 
         # Cumulative token usage for the session
