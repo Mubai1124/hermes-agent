@@ -92,6 +92,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.lossless_context_manager import LosslessContextManager
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -1215,6 +1216,9 @@ class AIAgent:
         compression_summary_model = _compression_cfg.get("summary_model") or None
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        lossless_enabled = str(_compression_cfg.get("lossless", False)).lower() in ("true", "1", "yes")
+        lossless_aggregate_size = int(_compression_cfg.get("lossless_aggregate_size", 100))
+        lossless_tail_messages = int(_compression_cfg.get("lossless_tail_messages", 50))
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -1347,8 +1351,40 @@ class AIAgent:
             except Exception as _ce_err:
                 logger.debug("Context engine on_session_start: %s", _ce_err)
 
-        self._subdirectory_hints = SubdirectoryHintTracker(
-            working_dir=os.getenv("TERMINAL_CWD") or None,
+        # Lossless context manager: SQLite-backed DAG summarization (off by default)
+        self.lossless_context_manager: Optional[LosslessContextManager] = None
+        if lossless_enabled:
+            try:
+                from agent.auxiliary_client import call_llm as _call_llm
+
+                def _summary_fn(messages: list) -> str:
+                    from agent.model_metadata import estimate_messages_tokens_rough
+                    content = "\n\n".join(
+                        f"[{m.get('role', '?').upper()}]: {m.get('content') or ''}"
+                        for m in messages
+                    )
+                    tokens = estimate_messages_tokens_rough(messages)
+                    budget = max(200, min(tokens // 5, 4000))
+                    resp = _call_llm(
+                        task="compression",
+                        messages=[{"role": "user", "content": f"Summarize this conversation concisely:\n{content}"}],
+                        max_tokens=budget,
+                    )
+                    return resp.choices[0].message.content or ""
+
+                self.lossless_context_manager = LosslessContextManager(
+                    session_id=self.session_id,
+                    model=self.model,
+                    parent_session_id=parent_session_id,
+                    summary_fn=_summary_fn,
+                    aggregate_size=lossless_aggregate_size,
+                    tail_messages=lossless_tail_messages,
+                    quiet=self.quiet_mode,
+                )
+                if not self.quiet_mode:
+                    logger.info("Lossless context manager enabled: session=%s", self.session_id)
+            except Exception as e:
+                logger.warning("Failed to initialize LosslessContextManager: %s", e)
         )
         self._user_turn_count = 0
 
@@ -2202,6 +2238,12 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+        # Lossless: persist every message to SQLite immediately
+        if self.lossless_context_manager:
+            try:
+                self.lossless_context_manager.persist(messages)
+            except Exception:
+                pass
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
@@ -6576,6 +6618,13 @@ class AIAgent:
             except Exception:
                 pass
 
+        # Persist all messages to lossless SQLite store BEFORE compression
+        if self.lossless_context_manager:
+            try:
+                self.lossless_context_manager.persist(messages)
+            except Exception as e:
+                logger.debug("LosslessContextManager.persist failed: %s", e)
+
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
 
         todo_snapshot = self._todo_store.format_for_injection()
@@ -6593,6 +6642,14 @@ class AIAgent:
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+                # Fork lossless manager to the new session (same session_id)
+                if self.lossless_context_manager:
+                    try:
+                        self.lossless_context_manager = self.lossless_context_manager.fork_session(self.session_id)
+                    except Exception as e:
+                        logger.debug("LosslessContextManager.fork_session failed: %s", e)
+
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
                 self._session_db.create_session(
