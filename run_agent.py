@@ -1351,6 +1351,10 @@ class AIAgent:
             except Exception as _ce_err:
                 logger.debug("Context engine on_session_start: %s", _ce_err)
 
+        self._subdirectory_hints = SubdirectoryHintTracker(
+            working_dir=os.getenv("TERMINAL_CWD") or None,
+        )
+
         # Lossless context manager: SQLite-backed DAG summarization (off by default)
         self.lossless_context_manager: Optional[LosslessContextManager] = None
         if lossless_enabled:
