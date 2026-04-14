@@ -2678,6 +2678,12 @@ class GatewayRunner:
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
+        if canonical == "grep":
+            return await self._handle_grep_command(event)
+
+        if canonical == "stats":
+            return await self._handle_stats_command(event)
+
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 
@@ -6164,6 +6170,121 @@ class GatewayRunner:
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)
             return f"Error generating insights: {e}"
+
+    async def _handle_grep_command(self, event: MessageEvent) -> str:
+        """Handle /grep command -- search historical messages in lossless DB."""
+        import asyncio as _asyncio
+
+        args = event.get_command_args().strip()
+        if not args:
+            return "Usage: /grep <query>\nSearch historical messages in the lossless context database."
+
+        try:
+            from plugins.context_engine.lossless import LosslessContextEngine
+            from hermes_cli.config import read_raw_config
+            import os
+
+            cfg = read_raw_config()
+            home = cfg.get("hermes_home", os.path.expanduser("~/.hermes"))
+
+            # Load the lossless engine directly (bypasses session to search all sessions)
+            engine = LosslessContextEngine(hermes_home=home)
+
+            def _run_grep():
+                # Search all sessions (no session_id filter)
+                result = engine._lossless_grep(query=args, session_id=None, limit=10)
+                import json
+                data = json.loads(result)
+                if not data.get("results"):
+                    return f"No results found for: {args}"
+
+                lines = [f"🔍 Search: `{args}` ({data['count']} results)\n"]
+                for r in data["results"]:
+                    import datetime
+                    ts = datetime.datetime.fromtimestamp(r["timestamp"]).strftime("%m-%d %H:%M")
+                    role = r["role"]
+                    content = r["content"][:200].replace("\n", " ")
+                    lines.append(f"[{ts}] {role}: {content}...")
+                return "\n".join(lines)
+
+            loop = _asyncio.get_event_loop()
+            return await loop.run_in_executor(None, _run_grep)
+        except Exception as e:
+            logger.error("Grep command error: %s", e, exc_info=True)
+            return f"Error searching lossless DB: {e}"
+
+    async def _handle_stats_command(self, event: MessageEvent) -> str:
+        """Handle /stats command -- show lossless context DB statistics."""
+        import asyncio as _asyncio
+
+        try:
+            from plugins.context_engine.lossless import LosslessContextEngine
+            from hermes_cli.config import read_raw_config
+            import os
+            import sqlite3
+
+            cfg = read_raw_config()
+            home = cfg.get("hermes_home", os.path.expanduser("~/.hermes"))
+            db_path = os.path.join(home, "state", "lossless_context.db")
+
+            def _run_stats():
+                import datetime
+
+                if not os.path.exists(db_path):
+                    return "Lossless DB not found."
+
+                conn = sqlite3.connect(db_path)
+                cur = conn.cursor()
+
+                # Overall stats
+                cur.execute("SELECT COUNT(*) FROM messages")
+                total_msgs = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM sessions")
+                total_sessions = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM summaries")
+                total_summaries = cur.fetchone()[0]
+
+                # DB size
+                db_size = os.path.getsize(db_path)
+                if db_size > 1024 * 1024:
+                    db_size_str = f"{db_size / (1024*1024):.1f} MB"
+                else:
+                    db_size_str = f"{db_size / 1024:.1f} KB"
+
+                # Recent sessions
+                cur.execute("""
+                    SELECT session_id, last_updated,
+                           (SELECT COUNT(*) FROM messages WHERE session_id = s.session_id) as msg_count
+                    FROM sessions s
+                    ORDER BY last_updated DESC
+                    LIMIT 5
+                """)
+                recent = cur.fetchall()
+                conn.close()
+
+                lines = [
+                    "📊 **Lossless Context Stats**",
+                    f"DB size: {db_size_str}",
+                    f"Total messages: {total_msgs:,}",
+                    f"Total sessions: {total_sessions}",
+                    f"Total summaries: {total_summaries}",
+                    "",
+                    "Recent sessions:"
+                ]
+                for sid, updated, count in recent:
+                    ts = datetime.datetime.fromtimestamp(updated).strftime("%m-%d %H:%M")
+                    short_sid = sid[:20] + "..." if len(sid) > 20 else sid
+                    lines.append(f"  [{ts}] {short_sid}: {count} msgs")
+
+                return "\n".join(lines)
+
+            loop = _asyncio.get_event_loop()
+            return await loop.run_in_executor(None, _run_stats)
+        except Exception as e:
+            logger.error("Stats command error: %s", e, exc_info=True)
+            return f"Error getting stats: {e}"
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""

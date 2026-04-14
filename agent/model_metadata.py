@@ -1059,7 +1059,7 @@ def estimate_tokens_rough(text: str) -> int:
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
-    return (total_chars + 3) // 4
+    return (total_chars + 2) // 3
 
 
 def estimate_request_tokens_rough(
@@ -1082,4 +1082,4 @@ def estimate_request_tokens_rough(
         total_chars += sum(len(str(msg)) for msg in messages)
     if tools:
         total_chars += len(str(tools))
-    return (total_chars + 3) // 4
+    return (total_chars + 2) // 3

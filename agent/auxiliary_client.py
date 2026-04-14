@@ -149,15 +149,23 @@ _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
 def _to_openai_base_url(base_url: str) -> str:
-    """Normalize an Anthropic-style base URL to OpenAI-compatible format.
+    """Normalise an Anthropic-style base URL to OpenAI-compatible format.
 
     Some providers (MiniMax, MiniMax-CN) expose an ``/anthropic`` endpoint for
     the Anthropic Messages API and a separate ``/v1`` endpoint for OpenAI chat
     completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
     ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
     land on ``/anthropic/chat/completions`` — a 404.
+
+    Handles both suffixes:
+      - ``/anthropic``        → strip, rely on provider default or ""
+      - ``/anthropic/v1``     → strip both segments; OpenAI SDK appends /v1/chat/completions
     """
     url = str(base_url or "").strip().rstrip("/")
+    if url.endswith("/anthropic/v1"):
+        rewritten = url[: -len("/anthropic/v1")] + "/v1"
+        logger.debug("Auxiliary client: rewrote base URL %s → %s", url, rewritten)
+        return rewritten
     if url.endswith("/anthropic"):
         rewritten = url[: -len("/anthropic")] + "/v1"
         logger.debug("Auxiliary client: rewrote base URL %s → %s", url, rewritten)
@@ -1395,17 +1403,19 @@ def resolve_provider_client(
                     "but base_url is empty"
                 )
                 return None, None
+            # Normalise Anthropic-style URLs to OpenAI format for custom endpoints
+            custom_base_normalised = _to_openai_base_url(custom_base)
             final_model = _normalize_resolved_model(
                 model or _read_main_model() or "gpt-4o-mini",
                 provider,
             )
             extra = {}
-            if "api.kimi.com" in custom_base.lower():
+            if "api.kimi.com" in custom_base_normalised.lower():
                 extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
-            elif "api.githubcopilot.com" in custom_base.lower():
+            elif "api.githubcopilot.com" in custom_base_normalised.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
-            client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
+            client = OpenAI(api_key=custom_key, base_url=custom_base_normalised, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
             return (_to_async_client(client, final_model) if async_mode
                     else (client, final_model))
@@ -1997,16 +2007,21 @@ def _resolve_task_provider_model(
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
-        # Backwards compat: compression section has its own keys.
-        # The auxiliary.compression defaults to provider="auto", so treat
-        # both None and "auto" as "not explicitly configured".
-        if task == "compression" and (not cfg_provider or cfg_provider == "auto"):
+        # Backwards compat / priority: compression section has dedicated
+        # summary_provider/model keys that always take precedence for the
+        # compression task (override auxiliary.compression.provider).
+        if task == "compression":
             comp = config.get("compression", {}) if isinstance(config, dict) else {}
             if isinstance(comp, dict):
-                cfg_provider = comp.get("summary_provider", "").strip() or None
-                cfg_model = cfg_model or comp.get("summary_model", "").strip() or None
+                _sp = comp.get("summary_provider", "").strip()
+                _sm = comp.get("summary_model", "").strip()
                 _sbu = comp.get("summary_base_url") or ""
-                cfg_base_url = cfg_base_url or _sbu.strip() or None
+                if _sp:
+                    cfg_provider = _sp or None
+                if _sm:
+                    cfg_model = _sm or None
+                if _sbu.strip():
+                    cfg_base_url = _sbu.strip() or None
 
     # Env vars are backward-compat fallback only — config.yaml is primary.
     env_model = _get_auxiliary_env_override(task, "MODEL") if task else None

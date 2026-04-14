@@ -1,0 +1,3 @@
+name: lossless
+description: Lossless context engine — persists every message to SQLite for full conversation history
+version: 1.0.0

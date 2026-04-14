@@ -24,7 +24,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
-    SESSION_SEARCH_GUIDANCE,
+    LOSSLESS_GREP_GUIDANCE,
     PLATFORM_HINTS,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
@@ -39,13 +39,13 @@ class TestGuidanceConstants:
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE
-        assert "session_search" in MEMORY_GUIDANCE
+        assert "lossless_grep" in MEMORY_GUIDANCE
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
-    def test_session_search_guidance_is_simple_cross_session_recall(self):
-        assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
-        assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+    def test_lossless_grep_guidance_is_simple_cross_session_recall(self):
+        assert "relevant cross-session context exists" in LOSSLESS_GREP_GUIDANCE
+        assert "recent turns of the current session" not in LOSSLESS_GREP_GUIDANCE
 
 
 # =========================================================================

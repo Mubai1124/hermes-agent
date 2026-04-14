@@ -224,6 +224,10 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         query = _oneline(args.get("query", ""))
         return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
 
+    if tool_name == "lossless_grep":
+        query = _oneline(args.get("query", ""))
+        return f"grep: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
+
     if tool_name == "memory":
         action = args.get("action", "")
         target = args.get("target", "")
@@ -900,6 +904,8 @@ def get_cute_tool_message(
             return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
     if tool_name == "session_search":
         return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
+    if tool_name == "lossless_grep":
+        return _wrap(f"┊ 🔍 grep      \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
     if tool_name == "memory":
         action = args.get("action", "?")
         target = args.get("target", "")

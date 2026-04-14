@@ -1,0 +1,8 @@
+;FFMETADATA1
+TITLE=影色舞
+ARTIST=MyGO!!!!!
+ALBUM=影色舞
+GENRE=Game
+DATE=2022
+track=1
+encoder=Lavf59.27.100
