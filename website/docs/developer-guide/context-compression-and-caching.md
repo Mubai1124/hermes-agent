@@ -4,7 +4,8 @@ Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
-`agent/prompt_caching.py`, `gateway/run.py` (session hygiene), `run_agent.py` (search for `_compress_context`)
+`agent/lossless_context_manager.py`, `agent/prompt_caching.py`, `gateway/run.py` (session hygiene),
+`run_agent.py` (search for `_compress_context`)
 
 
 ## Pluggable Context Engine
@@ -53,7 +54,7 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run.py` (search for `Session hygiene: auto-compress`). This is a **safety net** that
+Located in `gateway/run.py` (search for `_maybe_compress_session`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 
@@ -84,14 +85,38 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
-
-# Summarization model/provider configured under auxiliary:
-auxiliary:
-  compression:
-    model: null              # Override model for summaries (default: auto-detect)
-    provider: auto           # Provider: "auto", "openrouter", "nous", "main", etc.
-    base_url: null           # Custom OpenAI-compatible endpoint
+  summary_model: null        # Override model for summaries (default: uses auxiliary)
+  lossless: false            # Enable lossless SQLite-backed storage (default: false)
+  lossless_aggregate_size: 100   # Raw messages per L1 summary node (default: 100)
+  lossless_tail_messages: 50      # Fresh tail messages to keep in context (default: 50)
 ```
+
+### Lossless Context Manager (Optional Layer)
+
+When `compression.lossless: true`, all messages are persisted to a SQLite database
+before compression runs. This creates a DAG of summaries (Level-0 = raw messages,
+Level-1 = summarize every 100 messages, Level-2 = summarize Level-1 nodes, etc.).
+
+```
+Architecture:
+  Raw messages → DAG Layer 1 (every 100 msgs summarized)
+             → DAG Layer 2 (L1 nodes summarized)
+             → DAG Layer 3+ (as needed)
+
+  Assembly:  [system] + [fresh tail (50 msgs)] + [highest-level summary note]
+```
+
+Benefits:
+- **Every message is preserved** — no data loss across compressions
+- **DAG summarization** — multi-level summaries instead of iterative lossy compactions
+- **grep/expand tools** — query old messages by content or index
+- **Same session ID** as the AIAgent after each compression split
+
+Configuration options:
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `lossless_aggregate_size` | `100` | Raw messages per L1 summary node |
+| `lossless_tail_messages` | `50` | Fresh tail messages in assembled context |
 
 ### Parameter Details
 

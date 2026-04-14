@@ -80,7 +80,7 @@ from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, LOSSLESS_GREP_GUIDANCE, SKILLS_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -92,6 +92,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.lossless_context_manager import LosslessContextManager
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -1256,7 +1257,10 @@ class AIAgent:
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
-        compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        compression_protect_last = int(_compression_cfg.get("protect_last_n", 10))
+        lossless_enabled = str(_compression_cfg.get("lossless", False)).lower() in ("true", "1", "yes")
+        lossless_aggregate_size = int(_compression_cfg.get("lossless_aggregate_size", 100))
+        lossless_tail_messages = int(_compression_cfg.get("lossless_tail_messages", 50))
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -1414,6 +1418,46 @@ class AIAgent:
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,
         )
+
+        # Lossless context manager: SQLite-backed DAG summarization (off by default)
+        self.lossless_context_manager: Optional[LosslessContextManager] = None
+        if lossless_enabled:
+            try:
+                from agent.auxiliary_client import call_llm as _call_llm
+
+                def _summary_fn(messages: list) -> str:
+                    from agent.model_metadata import estimate_messages_tokens_rough
+                    content = "\n\n".join(
+                        f"[{m.get('role', '?').upper()}]: {m.get('content') or ''}"
+                        for m in messages
+                    )
+                    tokens = estimate_messages_tokens_rough(messages)
+                    budget = max(200, min(tokens // 5, 4000))
+                    # Use explicit provider/model to bypass config routing issues.
+                    # provider="minimax-cn" maps to the credentialed minimax-cn endpoint
+                    # with base_url https://api.minimaxi.com/anthropic.
+                    resp = _call_llm(
+                        task="compression",
+                        provider="minimax-cn",
+                        model="MiniMax-M2.7",
+                        messages=[{"role": "user", "content": f"Summarize this conversation concisely:\n{content}"}],
+                        max_tokens=budget,
+                    )
+                    return resp.choices[0].message.content or ""
+
+                self.lossless_context_manager = LosslessContextManager(
+                    session_id=self.session_id,
+                    model=self.model,
+                    parent_session_id=parent_session_id,
+                    summary_fn=_summary_fn,
+                    aggregate_size=lossless_aggregate_size,
+                    tail_messages=lossless_tail_messages,
+                    quiet=self.quiet_mode,
+                )
+                if not self.quiet_mode:
+                    logger.info("Lossless context manager enabled: session=%s", self.session_id)
+            except Exception as e:
+                logger.warning("Failed to initialize LosslessContextManager: %s", e)
         self._user_turn_count = 0
 
         # Cumulative token usage for the session
@@ -2297,6 +2341,12 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+        # Lossless: persist every message to SQLite immediately
+        if self.lossless_context_manager:
+            try:
+                self.lossless_context_manager.persist(messages)
+            except Exception:
+                pass
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
@@ -3151,8 +3201,8 @@ class AIAgent:
         tool_guidance = []
         if "memory" in self.valid_tool_names:
             tool_guidance.append(MEMORY_GUIDANCE)
-        if "session_search" in self.valid_tool_names:
-            tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        if "lossless_grep" in self.valid_tool_names:
+            tool_guidance.append(LOSSLESS_GREP_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
@@ -6779,6 +6829,13 @@ class AIAgent:
             except Exception:
                 pass
 
+        # Persist all messages to lossless SQLite store BEFORE compression
+        if self.lossless_context_manager:
+            try:
+                self.lossless_context_manager.persist(messages)
+            except Exception as e:
+                logger.debug("LosslessContextManager.persist failed: %s", e)
+
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
 
         todo_snapshot = self._todo_store.format_for_injection()
@@ -6796,6 +6853,14 @@ class AIAgent:
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+                # Fork lossless manager to the new session (same session_id)
+                if self.lossless_context_manager:
+                    try:
+                        self.lossless_context_manager = self.lossless_context_manager.fork_session(self.session_id)
+                    except Exception as e:
+                        logger.debug("LosslessContextManager.fork_session failed: %s", e)
+
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
                 self._session_db.create_session(
@@ -6832,8 +6897,11 @@ class AIAgent:
             estimate_tokens_rough(new_system_prompt)
             + estimate_messages_tokens_rough(compressed)
         )
-        self.context_compressor.last_prompt_tokens = _compressed_est
-        self.context_compressor.last_completion_tokens = 0
+        try:
+            self.context_compressor.last_prompt_tokens = _compressed_est
+            self.context_compressor.last_completion_tokens = 0
+        except (AttributeError, TypeError):
+            pass  # LosslessContextEngine has read-only properties
 
         # Only reset the pressure warning if compression actually brought
         # us below the warning level (85% of threshold).  When compression
@@ -7958,6 +8026,16 @@ class AIAgent:
                 tools=self.tools or None,
             )
 
+            # ── DEBUG: context compression diagnostic ──────────────────────────
+            logger.info(
+                "[DEBUG COMPRESS] preflight check | msgs=%d rough=%d threshold=%d "
+                "last_prompt=%d last_completion=%d",
+                len(messages),
+                _preflight_tokens,
+                self.context_compressor.threshold_tokens,
+                self.context_compressor.last_prompt_tokens,
+                self.context_compressor.last_completion_tokens,
+            )
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
                 logger.info(
                     "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
@@ -10130,6 +10208,23 @@ class AIAgent:
                                     k: v for k, v in AIAgent._context_pressure_last_warned.items()
                                     if v[1] > _cutoff
                                 }
+
+                    # ── DEBUG: main-loop compression diagnostic ─────────────────────
+                    _use_tokens = (
+                        _compressor.last_prompt_tokens + _compressor.last_completion_tokens
+                        if _compressor.last_prompt_tokens > 0
+                        else _real_tokens
+                    )
+                    logger.info(
+                        "[DEBUG COMPRESS] main check | rough_total=%d threshold=%d "
+                        "used_api=%s last_prompt=%d last_completion=%d msgs=%d",
+                        _real_tokens,
+                        _compressor.threshold_tokens,
+                        "YES" if _compressor.last_prompt_tokens > 0 else "NO (fallback rough)",
+                        _compressor.last_prompt_tokens,
+                        _compressor.last_completion_tokens,
+                        len(messages),
+                    )
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         self._safe_print("  ⟳ compacting context…")

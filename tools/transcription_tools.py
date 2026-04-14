@@ -291,7 +291,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
             logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
+            _local_model = WhisperModel(model_name, device="cuda", compute_type="float32")
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.

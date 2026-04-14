@@ -5459,6 +5459,10 @@ class HermesCLI:
             self._show_insights(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
+        elif canonical == "grep":
+            self._show_grep(cmd_original)
+        elif canonical == "stats":
+            self._show_stats()
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -6507,6 +6511,110 @@ class HermesCLI:
             db.close()
         except Exception as e:
             print(f"  Error generating insights: {e}")
+
+    def _show_grep(self, command: str = "/grep"):
+        """Search historical messages in lossless context DB."""
+        parts = command.split(maxsplit=1)
+        if len(parts) < 2:
+            print("Usage: /grep <query>")
+            print("Search historical messages in the lossless context database.")
+            return
+        query = parts[1].strip()
+        if not query:
+            print("Usage: /grep <query>")
+            return
+
+        try:
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+            from plugins.context_engine.lossless import LosslessContextEngine
+            from hermes_cli.config import load_cli_config
+            cfg = load_cli_config()
+            home = cfg.get("hermes_home", os.path.expanduser("~/.hermes"))
+
+            engine = LosslessContextEngine(hermes_home=home)
+            import json
+            result = engine._lossless_grep(query=query, session_id=None, limit=10)
+            data = json.loads(result)
+
+            if not data.get("results"):
+                print(f"No results found for: {query}")
+                return
+
+            print(f"🔍 Search: {query} ({data['count']} results)\n")
+            for r in data["results"]:
+                import datetime
+                ts = datetime.datetime.fromtimestamp(r["timestamp"]).strftime("%m-%d %H:%M")
+                role = r["role"]
+                content = r["content"][:200].replace("\n", " ")
+                print(f"[{ts}] {role}: {content}...")
+
+        except Exception as e:
+            print(f"  Error searching lossless DB: {e}")
+
+    def _show_stats(self):
+        """Show lossless context DB statistics."""
+        try:
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+            from hermes_cli.config import load_cli_config
+            import sqlite3
+
+            cfg = load_cli_config()
+            home = cfg.get("hermes_home", os.path.expanduser("~/.hermes"))
+            db_path = os.path.join(home, "state", "lossless_context.db")
+
+            if not os.path.exists(db_path):
+                print("Lossless DB not found.")
+                return
+
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+
+            cur.execute("SELECT COUNT(*) FROM messages")
+            total_msgs = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM sessions")
+            total_sessions = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM summaries")
+            total_summaries = cur.fetchone()[0]
+
+            db_size = os.path.getsize(db_path)
+            if db_size > 1024 * 1024:
+                db_size_str = f"{db_size / (1024*1024):.1f} MB"
+            else:
+                db_size_str = f"{db_size / 1024:.1f} KB"
+
+            cur.execute("""
+                SELECT session_id, last_updated,
+                       (SELECT COUNT(*) FROM messages WHERE session_id = s.session_id) as msg_count
+                FROM sessions s
+                ORDER BY last_updated DESC
+                LIMIT 5
+            """)
+            recent = cur.fetchall()
+            conn.close()
+
+            import datetime
+            print("📊 Lossless Context Stats")
+            print(f"  DB size: {db_size_str}")
+            print(f"  Total messages: {total_msgs:,}")
+            print(f"  Total sessions: {total_sessions}")
+            print(f"  Total summaries: {total_summaries}")
+            print()
+            print("Recent sessions:")
+            for sid, updated, count in recent:
+                ts = datetime.datetime.fromtimestamp(updated).strftime("%m-%d %H:%M")
+                short_sid = sid[:20] + "..." if len(sid) > 20 else sid
+                print(f"  [{ts}] {short_sid}: {count} msgs")
+
+        except Exception as e:
+            print(f"  Error getting stats: {e}")
 
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml and auto-reload MCP connections.

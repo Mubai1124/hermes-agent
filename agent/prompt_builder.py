@@ -150,14 +150,14 @@ MEMORY_GUIDANCE = (
     "that prevents the user from having to correct or remind you again. "
     "User preferences and recurring corrections matter more than procedural task details.\n"
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
-    "state to memory; use session_search to recall those from past transcripts. "
+    "state to memory; use lossless_grep to recall those from past transcripts. "
     "If you've discovered a new way to do something, solved a problem that could be "
     "necessary later, save it as a skill with the skill tool."
 )
 
-SESSION_SEARCH_GUIDANCE = (
+LOSSLESS_GREP_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
-    "relevant cross-session context exists, use session_search to recall it before "
+    "relevant cross-session context exists, use lossless_grep to recall it before "
     "asking them to repeat themselves."
 )
 

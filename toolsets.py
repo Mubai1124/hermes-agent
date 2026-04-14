@@ -49,7 +49,7 @@ _HERMES_CORE_TOOLS = [
     # Planning & memory
     "todo", "memory",
     # Session history search
-    "session_search",
+    "session_search", "lossless_grep",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
