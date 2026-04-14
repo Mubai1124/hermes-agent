@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
+from hermes_cli.auth import get_first_api_key_env_var
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 
@@ -2236,9 +2237,10 @@ def call_llm(
             # through OpenRouter (which causes confusing 404s).
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                _hint_env_var = get_first_api_key_env_var(_explicit)
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
-                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                    f"was found. Set the {_hint_env_var} environment "
                     f"variable, or switch to a different provider with `hermes model`."
                 )
             # For auto/custom with no credentials, try the full auto chain
@@ -2436,9 +2438,10 @@ async def async_call_llm(
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                _hint_env_var = get_first_api_key_env_var(_explicit)
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
-                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                    f"was found. Set the {_hint_env_var} environment "
                     f"variable, or switch to a different provider with `hermes model`."
                 )
             if not resolved_base_url:

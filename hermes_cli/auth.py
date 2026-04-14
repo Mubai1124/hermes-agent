@@ -2482,6 +2482,19 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def get_first_api_key_env_var(provider_id: str) -> Optional[str]:
+    """Return the first environment variable name for a provider's API key.
+
+    Returns the first entry in the provider's ``api_key_env_vars`` list,
+    which is the canonical env var name for user guidance in error messages.
+    Falls back to ``{PROVIDER_ID.upper()}_API_KEY`` for unknown providers.
+    """
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if pconfig and pconfig.api_key_env_vars:
+        return pconfig.api_key_env_vars[0]
+    return f"{provider_id.upper()}_API_KEY"
+
+
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
