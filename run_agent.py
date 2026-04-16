@@ -7109,6 +7109,19 @@ class AIAgent:
                 self._session_db.update_system_prompt(self.session_id, new_system_prompt)
                 # Reset flush cursor — new session starts with no messages written
                 self._last_flushed_db_idx = 0
+
+                # Notify the context engine of the new session so it updates internal
+                # session state (e.g. LosslessContextEngine._session_id and _msg_idx)
+                if hasattr(self.context_compressor, "on_session_start"):
+                    try:
+                        self.context_compressor.on_session_start(
+                            session_id=self.session_id,
+                            hermes_home=str(self._hermes_home) if hasattr(self, "_hermes_home") else None,
+                            platform=self.platform,
+                            model=self.model,
+                        )
+                    except Exception as e:
+                        logger.warning("context_engine.on_session_start failed after split: %s", e)
             except Exception as e:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
@@ -9235,6 +9248,12 @@ class AIAgent:
                             "total_tokens": total_tokens,
                         }
                         self.context_compressor.update_from_response(usage_dict)
+
+                        # Notify context engine of new messages this turn so engines
+                        # like LosslessContextEngine can persist them immediately
+                        # (not just during compression).
+                        if hasattr(self.context_compressor, "on_messages"):
+                            self.context_compressor.on_messages(messages)
 
                         # Cache discovered context length after successful call.
                         # Only persist limits confirmed by the provider (parsed

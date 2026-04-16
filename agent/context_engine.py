@@ -124,6 +124,18 @@ class ContextEngine(ABC):
         self.last_total_tokens = 0
         self.compression_count = 0
 
+    # -- Optional: per-turn message notification ---------------------------
+
+    def on_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """Called after each turn with the current message list.
+
+        Use this for engines that need to track every message (e.g. lossless
+        logging) rather than only writing during compression.
+
+        Default no-op. Override in your engine implementation.
+        """
+        pass
+
     # -- Optional: tools ---------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:

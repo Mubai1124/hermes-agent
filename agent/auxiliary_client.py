@@ -1558,6 +1558,28 @@ def resolve_provider_client(
             final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 
+        pool_present, entry = _select_pool_entry(provider)
+        if pool_present:
+            # Prefer pool credentials (runtime resolved) over env-var credentials.
+            # This ensures masked keys (sk-cp-...) are replaced with real keys.
+            api_key = _pool_runtime_api_key(entry)
+            if api_key:
+                base_url = _to_openai_base_url(
+                    _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+                )
+                default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
+                final_model = _normalize_resolved_model(model or default_model, provider)
+                headers = {}
+                if "api.kimi.com" in base_url.lower():
+                    headers["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                elif "api.githubcopilot.com" in base_url.lower():
+                    from hermes_cli.models import copilot_default_headers
+                    headers["default_headers"] = copilot_default_headers()
+                client = OpenAI(api_key=api_key, base_url=base_url,
+                                **({"default_headers": headers["default_headers"]} if headers else {}))
+                return (_to_async_client(client, final_model) if async_mode
+                        else (client, final_model))
+
         creds = resolve_api_key_provider_credentials(provider)
         api_key = str(creds.get("api_key", "")).strip()
         if not api_key:
@@ -1579,7 +1601,7 @@ def resolve_provider_client(
         # Provider-specific headers
         headers = {}
         if "api.kimi.com" in base_url.lower():
-            headers["User-Agent"] = "KimiCLI/1.30.0"
+            headers["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 
@@ -2165,7 +2187,15 @@ def _resolve_task_provider_model(
     if task:
         # Config.yaml is the primary source for per-task overrides.
         if cfg_base_url:
-            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+            # When a custom endpoint is configured, resolve the real API key
+            # from the credential pool (cfg_api_key is masked as sk-cp-...).
+            # Use cfg_provider if set and not "auto", otherwise fall back to
+            # "minimax-cn" as the default for minimax endpoints.
+            _provider_for_pool = cfg_provider if cfg_provider and cfg_provider != "auto" else "minimax-cn"
+            pool_present, entry = _select_pool_entry(_provider_for_pool)
+            real_api_key = _pool_runtime_api_key(entry) if pool_present else cfg_api_key
+            real_base_url = _pool_runtime_base_url(entry, cfg_base_url) if pool_present else cfg_base_url
+            return "custom", resolved_model, real_base_url, real_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
 
